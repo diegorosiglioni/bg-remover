@@ -46,7 +46,8 @@ def test_generate_then_apply_end_to_end(tmp_path: Path, monkeypatch):
         ["--step", "generate_masks", "--root", str(root), "--masks", str(masks)]
     )
     assert gen == 0
-    assert (masks / "object_A" / "1_mask.png").exists()
+    # Masked (non-pendant) folder stores one shared mask, not one per image.
+    assert (masks / "object_A" / "_shared_mask.png").exists()
 
     app = run.main(
         [

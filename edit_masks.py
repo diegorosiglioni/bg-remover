@@ -45,7 +45,13 @@ from typing import List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from app.masks import load_mask, mask_path, resize_mask, save_mask
+from app.masks import (
+    load_mask,
+    mask_path,
+    resize_mask,
+    save_mask,
+    shared_mask_path,
+)
 
 # Fallback screen size when it cannot be queried (no display server, etc.).
 _DEFAULT_SCREEN = (1920, 1080)
@@ -591,6 +597,10 @@ def _load_initial_mask(
 ) -> np.ndarray:
     """Load any existing mask for ``source`` at ``size_wh``.
 
+    Prefers the per-image mask; if absent, falls back to the folder's shared
+    mask so a masked-folder silhouette can be corrected. Saving (ENTER) always
+    writes a per-image mask, which then overrides the shared one for this image.
+
     Args:
         source: Source image path.
         root: Input root.
@@ -603,7 +613,11 @@ def _load_initial_mask(
     path = mask_path(source, root, masks_dir)
     width, height = size_wh
     if not path.exists():
-        return np.zeros((height, width), dtype=np.uint8)
+        shared = shared_mask_path(source.parent, root, masks_dir)
+        if shared.exists():
+            path = shared
+        else:
+            return np.zeros((height, width), dtype=np.uint8)
     boolean = load_mask(path)
     if boolean.shape != (height, width):
         boolean = resize_mask(boolean, (width, height))

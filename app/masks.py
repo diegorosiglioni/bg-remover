@@ -24,6 +24,13 @@ from PIL import Image
 # both the writer and the path resolver agree on the convention).
 MASK_SUFFIX = "_mask"
 
+# Filename of the single *shared* mask stored once per folder for the masked
+# (non-pendant) branch, where every image in the folder uses the same silhouette.
+# Storing one file instead of one per image avoids writing N byte-identical PNGs.
+# The leading underscore keeps it out of the way of per-image ``<stem>_mask.png``
+# files (which still override it for hand-edited single-image corrections).
+SHARED_MASK_NAME = "_shared_mask.png"
+
 # A grayscale pixel at/above this value is treated as foreground when a stored
 # mask is read back into a boolean array.
 _MASK_READ_THRESHOLD = 128
@@ -48,6 +55,28 @@ def mask_path(source: Path, root: Path, masks_dir: Path) -> Path:
     except ValueError:
         parent = Path(".")
     return masks_dir / parent / f"{source.stem}{MASK_SUFFIX}.png"
+
+
+def shared_mask_path(folder: Path, root: Path, masks_dir: Path) -> Path:
+    """Return the shared-mask file for ``folder`` mirrored under ``masks_dir``.
+
+    One file per folder, used by the masked (non-pendant) branch so a single
+    silhouette is stored once instead of duplicated per image.
+
+    Args:
+        folder: The source folder (the parent dir of its images).
+        root: Input root the relative subpath is taken from.
+        masks_dir: Mask root that mirrors the input tree.
+
+    Returns:
+        ``masks_dir/<relative dir>/_shared_mask.png``. When ``folder`` is not
+        under ``root``, the shared mask is placed flat in ``masks_dir``.
+    """
+    try:
+        relative = folder.relative_to(root)
+    except ValueError:
+        relative = Path(".")
+    return masks_dir / relative / SHARED_MASK_NAME
 
 
 def save_mask(mask: np.ndarray, destination: Path) -> None:

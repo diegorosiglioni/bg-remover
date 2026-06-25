@@ -54,8 +54,12 @@ def test_generate_masks_dispatch_and_layout(tmp_path: Path):
     # pendant: 2 inferences; masked: 1 inference (its 2nd image) -> 3 total.
     assert len(remover.processed) == 3
 
-    # Mask files mirror the tree with a _mask suffix.
-    for rel in ("object_A/1_mask.png", "object_A/2_mask.png",
+    # Masked (non-pendant) folder stores ONE shared mask, not one per image.
+    assert (masks / "object_A" / "_shared_mask.png").exists()
+    assert not (masks / "object_A" / "1_mask.png").exists()
+    assert not (masks / "object_A" / "2_mask.png").exists()
+    # Pendant folder keeps a per-image mask with the _mask suffix.
+    for rel in ("object_A/_shared_mask.png",
                 "object_B_pendant/1_mask.png", "object_B_pendant/2_mask.png"):
         mpath = masks / rel
         assert mpath.exists()
@@ -107,6 +111,41 @@ def test_apply_masks_resizes_mask_to_source(tmp_path: Path):
     rgba = np.asarray(Image.open(out / "object_A" / "1.png").convert("RGBA"))
     assert rgba.shape == (8, 8, 4)
     assert (rgba[..., 3] == 255).all()  # resized 4x4 keep-all -> full 8x8 opaque
+
+
+def test_apply_prefers_per_image_mask_over_shared(tmp_path: Path):
+    root = tmp_path / "in"
+    masks = tmp_path / "masks"
+    out = tmp_path / "out"
+    _write_png(root / "object_A" / "1.jpg", size=(8, 8))
+    _write_png(root / "object_A" / "2.jpg", size=(8, 8))
+    generate_masks(root, masks, FakeRemover())  # writes object_A/_shared_mask.png
+
+    # Hand override for image 1 only: keep everything.
+    save_mask(np.ones((8, 8), dtype=bool), masks / "object_A" / "1_mask.png")
+
+    ok, fail, skip = apply_masks(root, out, masks)
+    assert (ok, fail, skip) == (2, 0, 0)
+    # Image 1 uses its override (corner kept); image 2 uses the shared square.
+    rgba1 = np.asarray(Image.open(out / "object_A" / "1.png").convert("RGBA"))
+    rgba2 = np.asarray(Image.open(out / "object_A" / "2.png").convert("RGBA"))
+    assert rgba1[0, 0, 3] == 255  # override keeps the corner
+    assert rgba2[0, 0, 3] == 0  # shared mask removes the corner
+
+
+def test_generate_masked_shared_skip_existing(tmp_path: Path):
+    root = tmp_path / "in"
+    masks = tmp_path / "masks"
+    _write_png(root / "object_A" / "1.jpg")
+    _write_png(root / "object_A" / "2.jpg")
+    remover = FakeRemover()
+
+    generate_masks(root, masks, remover)
+    assert len(remover.processed) == 1  # one inference for the shared mask
+    # Second run with skip_existing must not re-infer the shared mask.
+    ok, fail, skip = generate_masks(root, masks, remover, skip_existing=True)
+    assert (ok, fail, skip) == (0, 0, 2)
+    assert len(remover.processed) == 1
 
 
 def test_generate_masks_skip_existing(tmp_path: Path):

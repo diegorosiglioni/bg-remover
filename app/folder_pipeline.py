@@ -37,7 +37,13 @@ from app.cli import IMAGE_EXTENSIONS, _is_within, _write_preview
 from app.composite import encode_png
 from app.config import Config
 from app.ingest import load_image
-from app.masks import load_mask, mask_path, resize_mask, save_mask
+from app.masks import (
+    load_mask,
+    mask_path,
+    resize_mask,
+    save_mask,
+    shared_mask_path,
+)
 from app.pipeline import BackgroundRemover
 
 logger = logging.getLogger(__name__)
@@ -467,23 +473,6 @@ def run_pipeline(
 # --------------------------------------------------------------------------- #
 
 
-def _native_size_wh(path: Path) -> Tuple[int, int]:
-    """Return the native ``(width, height)`` of a source image.
-
-    Uses the no-canonicalization ingest so the size matches exactly what the
-    apply step loads (EXIF orientation applied, no padding/scaling).
-
-    Args:
-        path: Source image path.
-
-    Returns:
-        ``(width, height)`` in pixels.
-    """
-    rgb = load_image(path, _NATIVE_INGEST)
-    height, width = rgb.shape[:2]
-    return width, height
-
-
 def _save_one_mask(
     mask: np.ndarray, source: Path, root: Path, masks_dir: Path
 ) -> Path:
@@ -567,9 +556,12 @@ def generate_masked_masks(
     """Shared-mask generation for a non-pendant folder.
 
     One inference on the second image (alphabetically) yields a single
-    silhouette; it is saved as a mask for *every* image in the folder, resized
-    to each image's native dimensions so the stored mask overlays its source
-    cleanly in the editor.
+    silhouette, saved **once** as the folder's shared mask
+    (``_shared_mask.png``) instead of duplicated per image. The apply step reads
+    this one file for every image in the folder and resizes it to each source,
+    so identical turntable frames no longer cost N byte-identical PNGs. A
+    hand-edited per-image ``<stem>_mask.png`` still overrides it for a single
+    image (see :func:`apply_masks`).
 
     Args:
         remover: The AI engine (``process(path) -> RGBA``).
@@ -577,12 +569,18 @@ def generate_masked_masks(
         root: Input root.
         masks_dir: Mask root.
         mask_threshold: Alpha cut for binarizing the reference silhouette.
-        skip_existing: Skip images whose mask PNG already exists.
+        skip_existing: Skip when the folder's shared mask already exists.
 
     Returns:
-        Tuple ``(n_ok, n_fail, n_skip)``. If the reference silhouette cannot be
-        built, every image is counted as failed.
+        Tuple ``(n_ok, n_fail, n_skip)`` counted over the folder's images: the
+        shared mask is written once but reported as covering every image. If the
+        reference silhouette cannot be built, every image is counted as failed.
     """
+    shared = shared_mask_path(images[0].parent, root, masks_dir)
+    if skip_existing and shared.exists():
+        print(f"  shared mask exists -> skip ({len(images)} images)")
+        return 0, 0, len(images)
+
     reference = select_reference(images)
     try:
         ref_rgba = remover.process(reference)
@@ -606,26 +604,14 @@ def generate_masked_masks(
         )
     print(f"  mask from {reference.name} ({int(mask.sum())} px foreground)")
 
-    n_ok = n_fail = n_skip = 0
-    for path in images:
-        destination = mask_path(path, root, masks_dir)
-        if skip_existing and destination.exists():
-            n_skip += 1
-            print(f"  {path.name} -> skip (mask exists)")
-            continue
-        try:
-            width, height = _native_size_wh(path)
-            sized = mask if mask.shape == (height, width) else resize_mask(
-                mask, (width, height)
-            )
-            save_mask(sized, destination)
-            n_ok += 1
-            print(f"  {path.name} -> {destination}")
-        except Exception as exc:  # isolate per-file failures
-            n_fail += 1
-            print(f"  {path.name} FAILED: {exc}", file=sys.stderr)
-            logger.debug("masked mask failure for %s", path, exc_info=True)
-    return n_ok, n_fail, n_skip
+    try:
+        save_mask(mask, shared)
+    except Exception as exc:
+        print(f"  FAILED to save shared mask: {exc}", file=sys.stderr)
+        logger.debug("shared mask save failure for %s", shared, exc_info=True)
+        return 0, len(images), 0
+    print(f"  shared mask -> {shared} (covers {len(images)} images)")
+    return len(images), 0, 0
 
 
 def generate_masks(
@@ -724,13 +710,19 @@ def apply_masks(
                 continue
             source_mask = mask_path(path, root, masks_dir)
             if not source_mask.exists():
-                n_fail += 1
-                print(
-                    f"  {path.name} FAILED: no mask at {source_mask}; "
-                    "run --step generate_masks first",
-                    file=sys.stderr,
-                )
-                continue
+                # Fall back to the folder's shared mask (masked branch). A
+                # per-image mask, when present, always wins as an override.
+                shared = shared_mask_path(path.parent, root, masks_dir)
+                if shared.exists():
+                    source_mask = shared
+                else:
+                    n_fail += 1
+                    print(
+                        f"  {path.name} FAILED: no mask at {source_mask}; "
+                        "run --step generate_masks first",
+                        file=sys.stderr,
+                    )
+                    continue
             try:
                 rgb = load_image(path, _NATIVE_INGEST)
                 mask = load_mask(source_mask)
