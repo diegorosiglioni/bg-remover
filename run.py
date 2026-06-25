@@ -3,12 +3,9 @@
 This decouples the expensive model inference from the cheap cutout step so a
 user can hand-edit masks (see ``edit_masks.py``) in between:
 
-    python run.py                          # generate then apply (full pipeline)
-    python run.py --step generate_masks    # runs the model, writes masks/
+    python run.py --step generate_masks   # runs the model, writes masks/
     # ...optionally edit masks with edit_masks.py...
     python run.py --step apply_masks       # reads masks/, writes output/
-
-With no ``--step`` both run in sequence: generate masks, then apply them.
 
 ``generate_masks`` dispatches per folder exactly like ``app.folder_pipeline``:
 folders whose name contains "pendant" get a per-image AI mask; other folders
@@ -27,6 +24,8 @@ from typing import Optional, Sequence
 
 from app.config import Config
 from app.folder_pipeline import (
+    DEFAULT_CARVE_MIN_AREA,
+    DEFAULT_CARVE_WHITE,
     DEFAULT_MASK_THRESHOLD,
     apply_masks,
     generate_masks,
@@ -60,7 +59,15 @@ def _run_generate(args: argparse.Namespace) -> int:
         print(f"error: no images found under {root}", file=sys.stderr)
         return 2
 
-    overrides: dict = {}
+    # Any enclosed hole whose centroid is within --fill-radius (default 0.16) of
+    # the image centre is re-covered with the opaque original image content;
+    # holes farther out stay transparent. restore_drops is disabled so the rule
+    # is purely the centre radius (size and material do not matter).
+    overrides: dict = {
+        "fill_holes": True,
+        "fill_holes_center_dist": args.fill_radius,
+        "fill_holes_restore_drops": False,
+    }
     if args.model is not None:
         overrides["model_name"] = args.model
     config = Config(**overrides)
@@ -73,7 +80,8 @@ def _run_generate(args: argparse.Namespace) -> int:
     remover = BackgroundRemover(config)
 
     n_ok, n_fail, n_skip = generate_masks(
-        root, masks_dir, remover, args.mask_threshold, args.skip_existing
+        root, masks_dir, remover, args.mask_threshold, args.skip_existing,
+        args.carve_white, args.carve_min_area,
     )
     _print_summary(n_ok, n_fail, n_skip)
     return 1 if n_fail else 0
@@ -146,14 +154,14 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         description=(
             "Two-step folder pipeline: --step generate_masks runs the model and "
             "writes grayscale masks; --step apply_masks reads them and writes "
-            "transparent PNGs. With no --step, both run in sequence."
+            "transparent PNGs."
         ),
     )
     parser.add_argument(
         "--step",
-        default=None,
+        required=True,
         choices=("generate_masks", "apply_masks"),
-        help="Which pipeline step to run (default: run both in sequence).",
+        help="Which pipeline step to run.",
     )
     parser.add_argument(
         "--root", default=DEFAULT_ROOT, help="Input root (subfolders = objects)."
@@ -171,6 +179,40 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         default=DEFAULT_MASK_THRESHOLD,
         metavar="0-255",
         help="Alpha cut for binarizing silhouettes (default 128).",
+    )
+    parser.add_argument(
+        "--carve-white",
+        type=int,
+        default=DEFAULT_CARVE_WHITE,
+        metavar="0-255",
+        help=(
+            "generate_masks: carve enclosed white holes (eyelets, gaps) from the "
+            "mask. Grayscale cut for 'white'; 0 disables (default). Try 250 for "
+            "jewellery on a white background."
+        ),
+    )
+    parser.add_argument(
+        "--carve-min-area",
+        type=float,
+        default=DEFAULT_CARVE_MIN_AREA,
+        metavar="FRAC",
+        help=(
+            "Minimum carved-hole area as a fraction of the image (default "
+            f"{DEFAULT_CARVE_MIN_AREA}); smaller white blobs (highlights, stones) "
+            "are kept. Only used when --carve-white > 0."
+        ),
+    )
+    parser.add_argument(
+        "--fill-radius",
+        type=float,
+        default=0.16,
+        metavar="0-1",
+        help=(
+            "generate_masks: max distance of a hole's centroid from the image "
+            "centre for it to be re-covered with the opaque original content, "
+            "normalized so 0 is the centre and 1.0 is a corner (half the "
+            "diagonal). Default 0.16. Holes farther out stay transparent."
+        ),
     )
     parser.add_argument(
         "--preview-dir",
@@ -206,18 +248,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not 0 <= args.mask_threshold <= 255:
         print("error: --mask-threshold must be in [0, 255]", file=sys.stderr)
         return 2
+    if not 0 <= args.carve_white <= 255:
+        print("error: --carve-white must be in [0, 255]", file=sys.stderr)
+        return 2
+    if not 0.0 <= args.carve_min_area <= 1.0:
+        print("error: --carve-min-area must be in [0.0, 1.0]", file=sys.stderr)
+        return 2
+    if not 0.0 < args.fill_radius <= 1.0:
+        print("error: --fill-radius must be in (0.0, 1.0]", file=sys.stderr)
+        return 2
 
     if args.step == "generate_masks":
         return _run_generate(args)
-    if args.step == "apply_masks":
-        return _run_apply(args)
-
-    # No --step: run the full pipeline (generate masks, then apply them).
-    rc_generate = _run_generate(args)
-    if rc_generate == 2:
-        return rc_generate
-    rc_apply = _run_apply(args)
-    return 1 if (rc_generate or rc_apply) else 0
+    return _run_apply(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

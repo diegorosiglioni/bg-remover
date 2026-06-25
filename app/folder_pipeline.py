@@ -49,6 +49,16 @@ PENDANT_TOKEN = "pendant"
 # Default alpha cut: a pixel is foreground when its 0..255 alpha is at/above it.
 DEFAULT_MASK_THRESHOLD = 128
 
+# White-hole carving defaults. With a white studio background, the AI silhouette
+# often keeps interior background showing through openings (ring eyelets, gaps).
+# Carving removes near-white regions that are *enclosed* by the silhouette while
+# protecting bright metal highlights and gem sparkles via a minimum-area floor.
+# 0 disables carving (default, so behaviour is unchanged unless asked for).
+DEFAULT_CARVE_WHITE = 0
+# A carved hole must cover at least this fraction of the image to count; smaller
+# enclosed white blobs (specular highlights, stones) are left as foreground.
+DEFAULT_CARVE_MIN_AREA = 0.002
+
 # Native-resolution ingest config: decode + EXIF + sRGB, but no canonical
 # padding/scaling, so each target image is masked and written at its own
 # original dimensions.
@@ -126,6 +136,73 @@ def mask_from_alpha(alpha: np.ndarray, threshold: int = DEFAULT_MASK_THRESHOLD) 
         Boolean mask, shape ``(H, W)``.
     """
     return alpha >= threshold
+
+
+def carve_white_holes(
+    mask: np.ndarray,
+    rgb: np.ndarray,
+    white_threshold: int = DEFAULT_CARVE_WHITE,
+    min_area_frac: float = DEFAULT_CARVE_MIN_AREA,
+) -> np.ndarray:
+    """Remove enclosed near-white interior regions (holes) from a foreground mask.
+
+    On a white background the AI silhouette frequently stays solid across
+    openings (an eyelet, the gap under a hook), so the stored background shows
+    through as opaque white. This drops those pixels to background while keeping
+    the silhouette's outer rim intact, so true holes become transparent.
+
+    A pixel is carved out only when it is **all** of:
+
+    * inside the current foreground,
+    * near-white (grayscale ``>= white_threshold``),
+    * in an enclosed white region (not connected to the exterior background, so
+      a notch cut in from the rim is never carved), and
+    * part of a connected white blob whose area is ``>= min_area_frac`` of the
+      image — this floor protects specular metal highlights and gem sparkles,
+      which are small and scattered, from being punched out.
+
+    Args:
+        mask: Boolean foreground mask, shape ``(H, W)`` (True = keep).
+        rgb: Source/cutout RGB for the same image, shape ``(H, W, 3)`` uint8.
+        white_threshold: Grayscale cut for "white" in ``1..255``; ``<= 0`` is a
+            no-op that returns ``mask`` unchanged.
+        min_area_frac: Minimum hole area as a fraction of the image (``0..1``).
+
+    Returns:
+        A new boolean mask with qualifying interior white holes set to False.
+        The input ``mask`` is not modified.
+    """
+    if white_threshold <= 0:
+        return mask
+    import cv2
+
+    height, width = mask.shape
+    # Exterior background = transparent pixels reachable from the image border.
+    transparent = (~mask).astype(np.uint8)
+    flooded = transparent.copy()
+    flood_mask = np.zeros((height + 2, width + 2), np.uint8)
+    for sx, sy in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        if flooded[sy, sx]:
+            cv2.floodFill(flooded, flood_mask, (sx, sy), 2)
+    external = flooded == 2
+    external_adjacent = cv2.dilate(
+        external.astype(np.uint8), np.ones((3, 3), np.uint8)
+    )
+
+    gray = rgb if rgb.ndim == 2 else cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    whiteish = ((gray >= white_threshold) & mask).astype(np.uint8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(whiteish, 8)
+    min_area = min_area_frac * height * width
+
+    carved = mask.copy()
+    for label in range(1, count):
+        component = labels == label
+        if (component & (external_adjacent > 0)).any():
+            continue  # touches the exterior -> a rim notch, not an interior hole
+        if stats[label, cv2.CC_STAT_AREA] < min_area:
+            continue  # too small -> specular highlight or gem sparkle
+        carved[component] = False
+    return carved
 
 
 def apply_mask(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -433,6 +510,8 @@ def generate_pendant_masks(
     masks_dir: Path,
     mask_threshold: int = DEFAULT_MASK_THRESHOLD,
     skip_existing: bool = False,
+    carve_white: int = DEFAULT_CARVE_WHITE,
+    carve_min_area: float = DEFAULT_CARVE_MIN_AREA,
 ) -> Tuple[int, int, int]:
     """Per-image AI masks for a pendant folder.
 
@@ -446,6 +525,8 @@ def generate_pendant_masks(
         masks_dir: Mask root (mirrors the input tree).
         mask_threshold: Alpha cut for binarizing each silhouette.
         skip_existing: Skip images whose mask PNG already exists.
+        carve_white: Grayscale cut for carving enclosed white holes; ``0`` off.
+        carve_min_area: Minimum carved-hole area as a fraction of the image.
 
     Returns:
         Tuple ``(n_ok, n_fail, n_skip)``.
@@ -460,6 +541,9 @@ def generate_pendant_masks(
         try:
             rgba = remover.process(path)
             mask = mask_from_alpha(rgba[..., 3], mask_threshold)
+            mask = carve_white_holes(
+                mask, rgba[..., :3], carve_white, carve_min_area
+            )
             save_mask(mask, destination)
             n_ok += 1
             print(f"  {path.name} -> {destination}")
@@ -477,6 +561,8 @@ def generate_masked_masks(
     masks_dir: Path,
     mask_threshold: int = DEFAULT_MASK_THRESHOLD,
     skip_existing: bool = False,
+    carve_white: int = DEFAULT_CARVE_WHITE,
+    carve_min_area: float = DEFAULT_CARVE_MIN_AREA,
 ) -> Tuple[int, int, int]:
     """Shared-mask generation for a non-pendant folder.
 
@@ -501,6 +587,9 @@ def generate_masked_masks(
     try:
         ref_rgba = remover.process(reference)
         mask = mask_from_alpha(ref_rgba[..., 3], mask_threshold)
+        mask = carve_white_holes(
+            mask, ref_rgba[..., :3], carve_white, carve_min_area
+        )
     except Exception as exc:
         print(
             f"  reference {reference.name} FAILED: {exc}; whole folder skipped",
@@ -545,6 +634,8 @@ def generate_masks(
     remover: Remover,
     mask_threshold: int = DEFAULT_MASK_THRESHOLD,
     skip_existing: bool = False,
+    carve_white: int = DEFAULT_CARVE_WHITE,
+    carve_min_area: float = DEFAULT_CARVE_MIN_AREA,
 ) -> Tuple[int, int, int]:
     """Step 1: run the model and persist a grayscale mask per source image.
 
@@ -557,6 +648,8 @@ def generate_masks(
         remover: The AI engine (``process(path) -> RGBA``).
         mask_threshold: Alpha cut for binarizing silhouettes.
         skip_existing: Skip images whose mask PNG already exists.
+        carve_white: Grayscale cut for carving enclosed white holes; ``0`` off.
+        carve_min_area: Minimum carved-hole area as a fraction of the image.
 
     Returns:
         Tuple ``(n_ok, n_fail, n_skip)`` aggregated across all folders.
@@ -568,12 +661,14 @@ def generate_masks(
         if is_pendant(folder.name):
             print(f"[pendant] {rel} ({len(images)} images) -> AI mask per image")
             ok, fail, skip = generate_pendant_masks(
-                remover, images, root, masks_dir, mask_threshold, skip_existing
+                remover, images, root, masks_dir, mask_threshold, skip_existing,
+                carve_white, carve_min_area,
             )
         else:
             print(f"[masked]  {rel} ({len(images)} images) -> shared mask")
             ok, fail, skip = generate_masked_masks(
-                remover, images, root, masks_dir, mask_threshold, skip_existing
+                remover, images, root, masks_dir, mask_threshold, skip_existing,
+                carve_white, carve_min_area,
             )
         total_ok += ok
         total_fail += fail

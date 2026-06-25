@@ -140,11 +140,9 @@ names you like; these are only the defaults.
 ## Two-step workflow with editable masks (`run.py`)
 
 `run.py` splits the folder pipeline into two explicit steps so you can inspect
-or hand-edit the masks between them and rerun only the cheap apply step. With no
-`--step`, both run in sequence (the full pipeline):
+or hand-edit the masks between them and rerun only the cheap apply step:
 
 ```bash
-python run.py                          # generate masks → apply masks → output/
 python run.py --step generate_masks    # runs the model, writes masks/
 # ...optionally edit masks (see edit_masks.py)...
 python run.py --step apply_masks       # reads masks/, writes output/
@@ -170,14 +168,24 @@ native-resolution source (RGB kept inside the mask, transparent outside), and
 resizes the mask to the source dimensions when they differ — so a hand-edited
 mask of any size still fits.
 
+**Interior holes in `generate_masks`:** an enclosed hole whose centroid is within
+`--fill-radius` of the image centre (default `0.16`) is re-covered with the
+opaque original content; holes farther out stay transparent. The radius is
+normalized (`0` = centre, `1.0` = a corner / half the diagonal), so the same
+value works for any image size. Set a smaller `--fill-radius` to cover only
+holes very close to the centre, or a larger one to reach farther out.
+
 | Flag | Meaning |
 |------|---------|
-| `--step {generate_masks,apply_masks}` | Which step to run (default: run both in sequence). |
+| `--step {generate_masks,apply_masks}` | Which step to run (required). |
 | `--root DIR` | Input root (default `input`). |
 | `--masks DIR` | Mask root (default `masks`). |
 | `--out DIR` | Output root for `apply_masks` (default `output`). |
 | `--model NAME` | rembg/ONNX model id (`generate_masks`). |
 | `--mask-threshold 0-255` | Alpha cut for binarizing silhouettes (default 128). |
+| `--fill-radius 0-1` | `generate_masks`: max centroid distance from the image centre for a hole to be re-covered with the original (default `0.16`; normalized, `0`=centre, `1.0`=corner). |
+| `--carve-white 0-255` | `generate_masks`: carve enclosed near-white holes (eyelets, gaps on a white background) out of the mask. Grayscale cut for "white"; `0` disables (default). Try `250`. |
+| `--carve-min-area FRAC` | Minimum carved-hole area as a fraction of the image (default `0.002`); smaller white blobs (highlights, stones) are kept. Only used when `--carve-white > 0`. |
 | `--preview-dir DIR` | Also write a checkerboard preview per image (`apply_masks`). |
 | `--skip-existing` | Skip images whose mask (generate) or output (apply) already exists. |
 | `--verbose` | Emit DEBUG logs and tracebacks. |
@@ -356,7 +364,7 @@ app/
   pipeline.py        remove_background(...) — the public entrypoint
   cli.py             batch folder processing
   folder_pipeline.py folder dispatch + generate_masks / apply_masks steps
-run.py               CLI: no --step = full pipeline; or generate_masks | apply_masks
+run.py               two-step CLI: --step generate_masks | apply_masks
 edit_masks.py        interactive OpenCV mask editor
 docs/ARCHITECTURE.md full system + phase-2 migration plan
 ```

@@ -9,31 +9,53 @@ __pycache__/
 .venv/
 venv*/
 
-# Models / caches downloaded on first run
+# Models folder
 models/
-.u2net/
 
-# Data
 data/
 
 # Environment overrides
 .env
+
+# rembg / ONNX model cache (downloaded on first run)
+.u2net/
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-.claude/
 
-# Working folders: keep the folder, ignore the images produced in it
-output/*
-!output/.gitkeep
-preview/*
-!preview/.gitkeep
+# Test / sample output
 out/
-out_fill/
 *.out.png
 
+in/
+*.png
+
+
+input/
+output/
+preview/
+masks/
+
+# Working folders: keep the folders, ignore the images produced in them
+output/*
+preview/*
+!output/.gitkeep
+!preview/.gitkeep
+
+
+.claude/
+
+out_fill/
+preview/
+tests/
+
+
+CODE_REVIEW.md
+*.ini
 # input/ holds the known problem-case inputs and IS tracked
 # (committed as regression/reference samples).
+
+_redo_root/

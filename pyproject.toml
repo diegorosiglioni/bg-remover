@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "background_removal"
 version = "0.1.0"
-description = "Remove white background from images."
+description = "Remove white backgrounds from images with no edge halo."
 readme = "README.md"
 requires-python = ">=3.10"
 
