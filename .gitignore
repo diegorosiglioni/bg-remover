@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
+.venv/
+venv*/
+
+# Models / caches downloaded on first run
+models/
+.u2net/
+
+# Data
+data/
+
+# Environment overrides
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# Working folders: keep the folder, ignore the images produced in it
+output/*
+!output/.gitkeep
+preview/*
+!preview/.gitkeep
+out/
+out_fill/
+*.out.png
+
+# input/ holds the known problem-case inputs and IS tracked
+# (committed as regression/reference samples).

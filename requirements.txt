@@ -1,0 +1,18 @@
+# Phase 1 — CPU-only background removal (rembg + ONNX Runtime).
+# No torch / CUDA / transformers / FastAPI here; those arrive in phase 2.
+# Pins are DRAFTS verified at install time; anything that does not resolve is
+# corrected and reported. See docs/ARCHITECTURE.md for the phase-2 plan.
+
+# --- engine (CPU ONNX) ---
+rembg==2.0.76
+onnxruntime==1.20.1
+
+# --- image / matting (engine-independent modules, reused unchanged in phase 2) ---
+pymatting==1.1.14
+opencv-contrib-python==4.10.0.84    # provides cv2.ximgproc.guidedFilter
+pillow==12.1.0
+numpy==2.3.4
+
+# --- configuration ---
+pydantic==2.10.2
+pydantic-settings==2.6.1
